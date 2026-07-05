@@ -6,7 +6,8 @@
     "start": "node src/index.js",
     "dev": "nodemon src/index.js",
     "ingest": "node scripts/ingest-docs.js",
-    "db:setup": "node src/db/setup.js"
+    "db:setup": "node src/db/setup.js",
+    "index-files": "node scripts/index-files.js"
   },
   "dependencies": {
     "cors": "^2.8.5",
