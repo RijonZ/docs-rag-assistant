@@ -4,6 +4,8 @@ import { config } from './config.js';
 import { setupDatabase } from './db/setup.js';
 import chatRouter from './routes/chat.js';
 import ingestRouter from './routes/ingest.js';
+import filesRouter from './routes/files.js';
+import { setupFilesTable } from './db/setup-files.js';
 
 const app = express();
 
@@ -13,6 +15,7 @@ app.use(express.json());
 app.get('/api/health', (_req, res) => res.json({ status: 'ok' }));
 app.use('/api/chat', chatRouter);
 app.use('/api/ingest', ingestRouter);
+app.use('/api/files', filesRouter);
 
 app.use((err, _req, res, _next) => {
   console.error(err);
@@ -21,6 +24,7 @@ app.use((err, _req, res, _next) => {
 
 async function start() {
   await setupDatabase();
+  await setupFilesTable();
   app.listen(config.port, () =>
     console.log(`Backend running on http://localhost:${config.port}`)
   );
