@@ -1,4 +1,4 @@
-﻿import { readdirSync, lstatSync } from 'fs';
+import { readdirSync, lstatSync, readFileSync } from 'fs';
 import { join, extname, basename, dirname } from 'path';
 import { setupFilesTable } from '../src/db/setup-files.js';
 import { pool } from '../src/db/client.js';
@@ -11,6 +11,47 @@ const SKIP_NAMES = new Set([
 ]);
 
 const SKIP_APPDATA = new Set(['local', 'locallow']);
+
+const TEXT_EXTS = new Set([
+  '.txt', '.md', '.log', '.csv', '.json', '.xml', '.yaml', '.yml',
+  '.js', '.ts', '.jsx', '.tsx', '.py', '.java', '.cs', '.go',
+  '.html', '.css', '.sh', '.bat', '.ps1', '.ini', '.cfg', '.toml',
+]);
+
+function sanitize(str) {
+  return str.replace(/\0/g, '').replace(/[\x01-\x08\x0b\x0c\x0e-\x1f]/g, ' ');
+}
+
+async function readContent(filePath, ext, sizeByes) {
+  try {
+    if (ext === '.pdf') {
+      const { default: pdfParse } = await import('pdf-parse/lib/pdf-parse.js');
+      const buf = readFileSync(filePath);
+      const data = await pdfParse(buf);
+      return sanitize(data.text).slice(0, 100_000);
+    }
+    if (ext === '.docx') {
+      const { default: mammoth } = await import('mammoth');
+      const result = await mammoth.extractRawText({ path: filePath });
+      return sanitize(result.value).slice(0, 100_000);
+    }
+    if (ext === '.xlsx' || ext === '.xls') {
+      const { default: xlsxLib } = await import('xlsx');
+      const wb = xlsxLib.readFile(filePath);
+      const text = wb.SheetNames
+        .map(n => xlsxLib.utils.sheet_to_csv(wb.Sheets[n]))
+        .join('\n');
+      return sanitize(text).slice(0, 100_000);
+    }
+    if (TEXT_EXTS.has(ext) && sizeByes <= 2 * 1024 * 1024) {
+      const raw = readFileSync(filePath, 'utf8');
+      return sanitize(raw).slice(0, 100_000);
+    }
+  } catch {
+    // unreadable file — skip content silently
+  }
+  return null;
+}
 
 function shouldSkip(fullPath, name) {
   const lower = name.toLowerCase();
@@ -59,26 +100,32 @@ async function indexFiles(roots) {
   process.stdout.write(`\r  Found ${files.length.toLocaleString()} files        \n\n`);
   if (files.length === 0) { console.error('No files found.'); process.exit(1); }
 
-  const batchSize = 2000;
+  const batchSize = 200;
   const client = await pool.connect();
   try {
     let inserted = 0;
     for (let i = 0; i < files.length; i += batchSize) {
       const batch = files.slice(i, i + batchSize);
+      const enriched = await Promise.all(
+        batch.map(async f => ({
+          ...f,
+          content: await readContent(f.path, f.extension, f.size_bytes),
+        }))
+      );
       const values = [];
       const params = [];
       let p = 1;
-      for (const f of batch) {
-        values.push(`($${p++}, $${p++}, $${p++}, $${p++}, $${p++}, $${p++})`);
-        params.push(f.path, f.name, f.extension, f.size_bytes, f.modified_at, f.directory);
+      for (const f of enriched) {
+        values.push(`($${p++}, $${p++}, $${p++}, $${p++}, $${p++}, $${p++}, $${p++})`);
+        params.push(f.path, f.name, f.extension, f.size_bytes, f.modified_at, f.directory, f.content);
       }
       await client.query(
-        `INSERT INTO file_index (path, name, extension, size_bytes, modified_at, directory)
+        `INSERT INTO file_index (path, name, extension, size_bytes, modified_at, directory, content)
          VALUES ${values.join(',')}
          ON CONFLICT (path) DO UPDATE SET
            name = EXCLUDED.name, extension = EXCLUDED.extension,
            size_bytes = EXCLUDED.size_bytes, modified_at = EXCLUDED.modified_at,
-           directory = EXCLUDED.directory, indexed_at = NOW()`,
+           directory = EXCLUDED.directory, content = EXCLUDED.content, indexed_at = NOW()`,
         params
       );
       inserted += batch.length;
